@@ -2,40 +2,29 @@
     'use strict';
 
     // ================================================================
-    // Плагин: Kinopoisk CX (MVP)
-    // Назначение: добавляет кнопку в карточку фильма/сериала (full),
-    // формирует ссылку на Кинопоиск с заменой домена .ru -> .cx,
-    // поддерживает ручной ввод ID или названия.
+    // Плагин: Kinopoisk CX
+    // Добавляет кнопку «Кинопоиск» в карточку фильма/сериала (full),
+    // формирует ссылку на зеркало kinopoisk.cx, поддерживает ручной
+    // ввод ID или названия (Lampa.Input.edit с фолбэком на Select).
     // ================================================================
 
     var PLUGIN_NAME = 'kinopoisk_cx';
     var PLUGIN_TITLE = 'Kinopoisk CX';
-
-    // Список ID карточек, в которые уже добавлена кнопка (защита от дублей)
-    var addedButtonMovieIds = [];
+    var BTN_CLASS = 'kp-plugin-btn';
+    var CONTAINER_SELECTOR = '.full-start-new__buttons';
+    var FALLBACK_DELAY_MS = 500;   // повторный поиск контейнера, если ещё не отрендерился
+    var FALLBACK_MAX_TRIES = 3;    // максимум повторов на один рендер карточки
 
     // ---------------------------------------------------------------
     // Вспомогательные функции (ES5)
     // ---------------------------------------------------------------
 
-    function startsWith(str, searchString) {
-        return str.lastIndexOf(searchString, 0) === 0;
-    }
-
-    function endsWith(str, searchString) {
-        var start = str.length - searchString.length;
-        if (start < 0) return false;
-        return str.indexOf(searchString, start) === start;
-    }
-
-    function isNumeric(str) {
-        var i;
-        if (typeof str !== 'string') return false;
-        if (str.length === 0) return false;
-        for (i = 0; i < str.length; i++) {
-            if (str.charAt(i) < '0' || str.charAt(i) > '9') return false;
-        }
-        return true;
+    // ES5-совместимая проверка «только цифры» (без String()/префиксов ES6)
+    function isNumeric(value) {
+        var s;
+        if (value === null || value === undefined) return false;
+        s = '' + value;
+        return /^\d+$/.test(s);
     }
 
     // ---------------------------------------------------------------
@@ -58,7 +47,7 @@
     }
 
     // ---------------------------------------------------------------
-    // Формирование ссылки на Кинопоиск из объекта карточки (full)
+    // Формирование ссылки из объекта карточки (full)
     // Проверяет movie.kinopoisk_id, затем movie.id
     // ---------------------------------------------------------------
     function buildKinopoiskUrlFromMovie(movie) {
@@ -79,16 +68,13 @@
     // query — текстовый запрос
     // ---------------------------------------------------------------
     function buildSearchUrl(query) {
-        var url;
         if (!query) return '';
-
-        url = 'https://www.kinopoisk.cx/index.php?kp_query=' + encodeURIComponent(query);
-        return url;
+        return 'https://www.kinopoisk.cx/index.php?kp_query=' + encodeURIComponent(query);
     }
 
     // ---------------------------------------------------------------
     // Временное поведение: вывод итогового URL (MVP)
-    // Später здесь будет реальное открытие страницы/окна просмотра
+    // Позже здесь будет реальное открытие страницы в среде Lampa
     // ---------------------------------------------------------------
     function openKinopoiskPage(url) {
         if (!url) {
@@ -98,150 +84,189 @@
 
         Lampa.Noty.show(url);
         console.log('[KP Plugin] URL:', url);
-
-        // TODO: Реализовать реальное открытие страницы в среде Lampa.
-        // Пример возможного подхода (нужно уточнить API Lampa):
-        // Lampa.Activity.push({
-        //     url: url,
-        //     title: 'Kinopoisk CX',
-        //     component: 'webview'
-        // });
     }
 
     // ---------------------------------------------------------------
-    // Ручной ввод ID Кинопоиска или названия
-    // Использует только Lampa.Select.show (реально presenti в refs/).
-    // ВНИМАНИЕ: Lampa.Input.edit НЕ найден в refs/, поэтому полноценный
-    // диалог ввода текста пока не реализован. Логика формирования URL
-    // готова — остаётся только получить строку от пользователя.
+    // Обработка строки ручного ввода: цифры -> ссылка на фильм/сериал,
+    // текст -> поисковая ссылка
     // ---------------------------------------------------------------
-    function showSearchDialog() {
+    function handleManualInput(text) {
+        var value;
+        if (text === null || text === undefined) return;
+
+        // Безопасно приводим к строке: коллбэки Lampa могут передать не строку
+        value = ('' + text).replace(/^\s+|\s+$/g, '');
+        if (!value) return;
+
+        if (isNumeric(value)) {
+            // Только цифры — предполагаем ID Кинопоиска, уточняем тип
+            askTypeForId(value);
+        } else {
+            openKinopoiskPage(buildSearchUrl(value));
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Выбор типа для числового ID: фильм или сериал
+    // ---------------------------------------------------------------
+    function askTypeForId(id) {
         Lampa.Select.show({
-            title: 'Ввод ID или названия',
+            title: 'Что открыть по ID ' + id + '?',
             items: [
-                { title: 'Ввести ID Кинопоиска (цифры)', value: 'id' },
-                { title: 'Ввести название', value: 'title' },
-                { title: 'Отмена', value: 'cancel' }
+                { title: 'Фильм', value: 'movie' },
+                { title: 'Сериал', value: 'tv' }
             ],
             onBack: function () {},
             onSelect: function (item) {
-                if (item.value === 'cancel') {
-                    return;
-                }
-                if (item.value === 'id') {
-                    // Заглушка: в refs/ нет Lampa.Input.edit для ввода текста.
-                    // Реальный ввод ID требует компонента ввода, которого нет в примерах.
-                    Lampa.Noty.show('Текстовый ввод ID требует Lampa.Input.edit (не найден в refs/)');
-                    Lampa.Noty.show('Пример URL: https://www.kinopoisk.cx/film/1331649/');
-                } else if (item.value === 'title') {
-                    Lampa.Noty.show('Текстовый ввод названия требует Lampa.Input.edit (не найден в refs/)');
-                    Lampa.Noty.show('Пример URL: https://www.kinopoisk.cx/index.php?kp_query=Медленные+лошади');
-                }
+                openKinopoiskPage(buildKinopoiskUrlFromId(id, item.value));
             }
         });
     }
 
     // ---------------------------------------------------------------
-    // Создание кнопки плагина (DOM-элемент через Lampa.Template)
+    // Ручной ввод ID или названия.
+    // Основной путь — Lampa.Input.edit (проверка на доступность),
+    // фолбэк — Lampa.Select.show с типовыми вариантами.
     // ---------------------------------------------------------------
-    function createButton(url) {
+    function showSearchDialog() {
+        // Глобальная Lampa доступна и как свойство window, и напрямую;
+        // проверяем оба варианта, чтобы не зависеть от области видимости
+        var lampa = (typeof Lampa !== 'undefined' && Lampa) ? Lampa : window.Lampa;
+
+        if (lampa && lampa.Input && typeof lampa.Input.edit === 'function') {
+            try {
+                lampa.Input.edit({
+                    title: 'ID или название Кинопоиска',
+                    value: '',
+                    free: true,
+                    onChange: function (value) {
+                        // Промежуточное значение — ничего не делаем
+                    },
+                    onComplete: function (value) {
+                        handleManualInput(value);
+                    }
+                });
+                return;
+            } catch (err) {
+                console.log('[KP Plugin] Lampa.Input.edit вызвался с ошибкой:', err);
+            }
+        }
+
+        // Фолбэк: выбор из подготовленных вариантов
+        Lampa.Select.show({
+            title: 'Ввод ID или названия',
+            items: [
+                { title: 'Открыть пример: фильм по ID', value: 'demo_film' },
+                { title: 'Открыть пример: поиск по названию', value: 'demo_search' },
+                { title: 'Отмена', value: 'cancel' }
+            ],
+            onBack: function () {},
+            onSelect: function (item) {
+                if (item.value === 'demo_film') {
+                    openKinopoiskPage(buildKinopoiskUrlFromId('1331649', 'movie'));
+                } else if (item.value === 'demo_search') {
+                    openKinopoiskPage(buildSearchUrl('Медленные лошади'));
+                }
+            }
+        });
+        Lampa.Noty.show('Ручной ввод недоступен: Lampa.Input.edit не найден');
+    }
+
+    // ---------------------------------------------------------------
+    // Создание кнопки плагина через jQuery (подход как в online_mod.js),
+    // без зависимости от шаблона button_default
+    // ---------------------------------------------------------------
+    function createButton(getUrl) {
+        var html;
         var btn;
-        if (!url) return null;
+        var busy = false;
 
-        // Используем шаблон кнопки Lampa.
-        // ВНИМАНИЕ: шаблон 'button_default' не найден в refs/.
-        // Если он отсутствует в целевой версии Lampa, кнопка не отобразится.
-        btn = Lampa.Template.get('button_default', {
-            title: 'Kinopoisk CX',
-            icon: 'film'
-        }, true);
+        html = '<div class="full-start__button selector ' + BTN_CLASS + '">' +
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+            '<rect x="2" y="4" width="20" height="16" rx="2"/>' +
+            '<line x1="7" y1="4" x2="7" y2="20"/><line x1="17" y1="4" x2="17" y2="20"/>' +
+            '<line x1="2" y1="12" x2="22" y2="12"/>' +
+            '</svg>' +
+            '<span>Кинопоиск</span>' +
+            '</div>';
 
-        if (!btn) return null;
+        btn = $(html);
 
-        // Обработчик нажатия пульта (D-Pad) — используется в refs/ (online_mod.js)
-        btn.on('hover:enter', function () {
-            openKinopoiskPage(url);
-        });
+        // Нажатие с пульта (D-Pad) и мышью; guard против двойного срабатывания
+        var onEnter = function () {
+            if (busy) return;
+            busy = true;
+            setTimeout(function () { busy = false; }, 800);
 
-        // Также подписываемся на click (стандартное событие, если поддерживается обёрткой Lampa)
-        btn.on('click', function () {
-            openKinopoiskPage(url);
-        });
+            var url = getUrl();
+            if (url) {
+                openKinopoiskPage(url);
+            } else {
+                showSearchDialog();
+            }
+        };
+
+        btn.on('hover:enter', onEnter);
+        btn.on('click', onEnter);
 
         return btn;
     }
 
     // ---------------------------------------------------------------
-    // Вставка кнопки в контейнер кнопок полной карточки (full)
-    // object — объект карточки из события Lampa.Listener.follow('full', ...)
+    // Вставка кнопки в контейнер кнопок карточки full.
+    // Дубли проверяются по DOM (.kp-plugin-btn внутри контейнера),
+    // поэтому повторное открытие карточки не блокируется.
+    // tries — счётчик fallback-повторов, если контейнер ещё не готов
     // ---------------------------------------------------------------
-    function addButtonToCard(object) {
+    function addButtonToCard(object, tries) {
         var movie;
-        var url;
-        var btn;
-        var container;
         var activityRender;
-        var i;
-        var alreadyAdded;
+        var container;
+        var btn;
 
-        if (!object) return;
+        if (!object || !object.movie) return;
 
-        movie = object.movie || {};
-        if (!movie.id) return;
+        movie = object.movie;
 
-        // Защита от дублей: если кнопка уже добавлена для этого фильма — не добавляем повторно
-        alreadyAdded = false;
-        for (i = 0; i < addedButtonMovieIds.length; i++) {
-            if (addedButtonMovieIds[i] === movie.id) {
-                alreadyAdded = true;
-                break;
-            }
-        }
-        if (alreadyAdded) return;
-
-        url = buildKinopoiskUrlFromMovie(movie);
-        if (!url) return;
-
-        btn = createButton(url);
-        if (!btn) return;
-
-        // Поиск контейнера кнопок карточки full.
-        // В refs/ нет готового примера селектора для full-карточки.
-        // Пробуем стандартные варианты, используемые в Lampa:
-        //   e.object.activity.render().find('.full-start-new__buttons')
-        //   или .full__actions
         try {
             activityRender = object.activity && object.activity.render ? object.activity.render() : null;
-            if (activityRender && activityRender.find) {
-                container = activityRender.find('.full-start-new__buttons');
-                if (!container || container.length === 0) {
-                    container = activityRender.find('.full__actions');
-                }
-                if (!container || container.length === 0) {
-                    container = activityRender.find('.full-buttons');
-                }
-            }
+            if (!activityRender || !activityRender.find) return;
+
+            container = activityRender.find(CONTAINER_SELECTOR);
         } catch (err) {
             container = null;
         }
 
-        if (container && container.append) {
-            container.append(btn);
-            addedButtonMovieIds.push(movie.id);
-        } else {
-            // Если контейнер не найден — кнопка не вставлена, сохраняем ID чтобы не пытаться повторно
-            addedButtonMovieIds.push(movie.id);
-            Lampa.Noty.show('Контейнер кнопок full не найден. Кнопка не добавлена.');
+        if (!container || container.length === 0) {
+            // Контейнер ещё не отрендерился — короткий fallback-повтор
+            if (tries < FALLBACK_MAX_TRIES) {
+                setTimeout(function () {
+                    addButtonToCard(object, tries + 1);
+                }, FALLBACK_DELAY_MS);
+            }
+            return;
         }
+
+        // Защита от дублей в текущем рендере карточки
+        if (container.find('.' + BTN_CLASS).length > 0) return;
+
+        btn = createButton(function () {
+            // Актуальные данные карточки на момент нажатия;
+            // если ID нет — getUrl вернёт '' и откроется диалог ввода
+            return buildKinopoiskUrlFromMovie(movie);
+        });
+
+        container.append(btn);
     }
 
     // ---------------------------------------------------------------
-    // Обработчик открытия карточки full
+    // Обработчик события 'full' (подпись подтверждена refs/online_mod.js)
     // ---------------------------------------------------------------
-    function onFullCardShow(e) {
-        if (!e) return;
-        if (e.type === 'show' && e.object) {
-            addButtonToCard(e.object);
+    function onFullCardEvent(e) {
+        if (!e || !e.object) return;
+
+        if (e.type === 'complite' || e.type === 'show') {
+            addButtonToCard(e.object, 0);
         }
     }
 
@@ -249,7 +274,7 @@
     // Инициализация плагина
     // ---------------------------------------------------------------
     function initPlugin() {
-        // Регистрация источника/плагина (пример из kp_source.js)
+        // Регистрация источника плагина
         if (!Lampa.Api) Lampa.Api = {};
         if (!Lampa.Api.sources) Lampa.Api.sources = {};
 
@@ -258,7 +283,7 @@
             title: PLUGIN_TITLE
         };
 
-        // Подписка на событие готовности приложения (пример из kp_source.js)
+        // Подписка на готовность приложения
         Lampa.Listener.follow('app', function (e) {
             if (e.type === 'ready') {
                 onAppReady();
@@ -272,12 +297,8 @@
     }
 
     function onAppReady() {
-        // Подписка на открытие карточки full.
-        // ВНИМАНИЕ: событие 'full' не найдено в refs/. Это стандартное имя события Lampa,
-        // но его точная сигнатура (e.type, e.object) может отличаться в целевой версии.
-        Lampa.Listener.follow('full', onFullCardShow);
-
-        Lampa.Noty.show('Плагин Kinopoisk CX загружен (MVP)');
+        Lampa.Listener.follow('full', onFullCardEvent);
+        Lampa.Noty.show('Плагин ' + PLUGIN_TITLE + ' загружен');
     }
 
     // ---------------------------------------------------------------
@@ -286,4 +307,3 @@
     initPlugin();
 
 })();
-
